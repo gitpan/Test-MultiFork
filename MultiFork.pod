@@ -13,7 +13,7 @@ Test::MultiFork - Test suite support for multi-process programs
 	setcommon(@newvalues)
 	unlockcommon()
 
-	use Test::MultiFork qw(groupwait setgroup dofork)
+	use Test::MultiFork qw(groupwait setgroup dofork stderr bail_on_bad_plan)
 
 	groupwait([$tag])
 	$oldgroup = setgroup([$newgroup])
@@ -83,10 +83,11 @@ For example:
 	sub xyz {
 	a: 
 		print "only a does something in this function\n";
+	abcd:
 	}
 
 Since the processes run in lockstep (synchronized at the labels), 
-loops controls must cover all processes.  
+loop controls must cover all processes.  
 
 In addition to fork() and the varient execution labels, you can
 override a default signal selection for debugging.  By default
@@ -95,6 +96,24 @@ bails out, it will send C<USR1> signals to all the children to ask
 them to print out some diagnostics.   The special label 
 C<SIGNAL_xyz:> changes which signal to use.  Substitute C<xyz> with
 your choice of signal or C<none> to disable this feature.
+
+=head1 IMPORTS
+
+=item stderr
+
+Import 'stderr' to send the STDERR output from each fork through
+the parent for tagging.  The default is to leave STDERR alone.
+
+=item bail_on_bad_plan
+
+Bail out if a test plan isn't followed.  This is most useful as a 
+way to exit early if one of the fork()ed children exits early.
+
+=item colorize
+
+If C<$ENV{TERM} =~ /xterm/>, then escape codes will be printed to change the
+background and foreground text colors so that each fork()ed child
+has a different color scheme.
 
 =head1 FUNCTIONS
 
@@ -151,14 +170,15 @@ Test::More) put Test::MultiFork first in the C<use> list.
 
 =head1 SEE ALSO
 
-	Test::Harness
-	Test::Builder
-	Test::Simple
-	Test::More
+Test::Harness
+Test::Builder
+Test::Simple
+Test::More
+Test
 
 =head1 BUGS
 
-This is brand-new and bearly tested.   Please provide feedback!
+This is new and bearly tested.   Please provide feedback!
 
 =head1 LICENSE
 

@@ -1,2 +1,14 @@
+= 2004/02/25	0.2
+
+Bug: Inactivity timeout timer always fired -- fixed
+
+Can now import 'stderr' to indicate that stderr output
+should be tagged with what stream it came from.
+
+Can now import 'colorize' to color the output based on which
+stream it came from.
+
+Can now import 'bail_on_bad_plan' to exit early when a child
+exits early.
 
 Initial revision

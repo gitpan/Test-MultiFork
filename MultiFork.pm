@@ -12,24 +12,18 @@ require Exporter;
 use Time::HiRes qw(sleep);
 use Carp;
 
-$VERSION = 0.1;
+$VERSION = 0.2;
 
 @ISA = qw(Exporter);
 @EXPORT = qw(procname lockcommon unlockcommon getcommon setcommon);
 @EXPORT_OK = (@EXPORT, qw(groupwait setgroup dofork));
 
 use strict;
-use diagnostics;
-
-my $pkg = __PACKAGE__;
-
-sub import {
-	my $pkg = shift;
-	filter_add(bless [], $pkg);
-	$pkg->export_to_level(1, @_);
-}
+use warnings;
 
 # server side
+my $stderr;
+my $colorize;
 my %capture;
 my %control;
 my $sequence = 1;
@@ -39,6 +33,9 @@ my $common = freeze([]);
 my %groups;
 my $timer;
 my $bialout;
+my $ret = '';
+my $bailonbadplan = 0;
+our $inactivity; $inactivity ||= 3;
 
 # client side
 my $server;
@@ -50,8 +47,66 @@ my $lockdepth = 0;
 my $group = 'default';
 my $waiting;
 
+# debugging
+
+my $debug_common = 0;
+
+# constants
+
+my $pkg = __PACKAGE__;
+my %color = (
+	black	=> 0,
+	red	=> 1,
+	green	=> 2,
+	yellow	=> 3,
+	blue	=> 4,
+	magenta	=> 5,
+	cyan	=> 6,
+	white	=> 7,
+	default	=> 9,
+);
+my %color_bg = (
+	a	=> $color{black},
+	b	=> $color{blue},
+	c	=> $color{green},
+	d	=> $color{red},
+	e	=> $color{cyan},
+	f	=> $color{magenta},
+	g	=> $color{yellow},
+);
+my @color_fg = (
+	'notused',
+	$color{white},
+	$color{yellow},
+	$color{cyan},
+	$color{magenta},
+	$color{red},
+	$color{green},
+	$color{blue},
+	$color{black},
+);
+
 # shared
 my $signal;
+
+sub import {
+	my $pkg = shift;
+	my @ia;
+	for my $ia (@_) {
+		if ($ia eq 'stderr') {
+			$stderr = 1;
+		} elsif ($ia eq 'colorize') {
+			$colorize = ($ENV{TERM} =~ /xterm/) && ! $ENV{HARNESS_ACTIVE};
+		} elsif ($ia eq 'bail_on_bad_plan') {
+			$bailonbadplan = 1;
+		} else {
+			push(@ia, @_);
+		}
+	}
+	filter_add(bless [], $pkg);
+	$pkg->export_to_level(1, @ia);
+}
+
 
 sub dofork
 {
@@ -145,6 +200,10 @@ sub dofork
 				my $fn = $newstdout->fileno();
 				open(STDOUT, ">&=$fn") || confess "redirect stdout: $!";
 				autoflush STDOUT 1;
+				if ($stderr) {
+					open(STDERR, ">&=$fn") || confess "redirect stdout: $!";
+					autoflush STDERR 1;
+				}
 				
 				$SIG{$signal} = \&lastrites
 					if $signal;
@@ -168,6 +227,12 @@ sub dofork
 		$control->{fh}->print("begin\n");
 	}
 
+	# exit on die
+	$Event::DIED = sub {
+		Event::verbose_exception_handler(@_);
+		Event::unloop_all();
+	};
+
 #print "event loop\n";
 	if (Event::loop() == 7.3) {
 		# great
@@ -176,7 +241,7 @@ sub dofork
 		notokay(1, "event loop timeout");
 	}
 	$sequence--;
-	print "1..$sequence\n";
+	print "\n1..$sequence\n";
 	exit(0);
 }
 
@@ -217,6 +282,7 @@ sub setgroup
 
 sub lockcommon
 {
+	cprint($letter, $number, "locking common\n") if $debug_common;
 	unless ($lockdepth++) {
 		print $server "lock common\n";
 		$waiting = "lock on common data";
@@ -224,10 +290,12 @@ sub lockcommon
 		confess unless $youhavelock eq "youhavelock\n";
 		undef $waiting;
 	}
+	cprint($letter, $number, "done\n") if $debug_common;
 }
 
 sub unlockcommon
 {
+	cprint($letter, $number, "unlocking common\n") if $debug_common;
 	unless (--$lockdepth) {
 		print $server "unlock common\n";
 		undef $common;
@@ -236,10 +304,12 @@ sub unlockcommon
 		warn "common already unlocked";
 		$lockdepth = 0;
 	}
+	cprint($letter, $number, "done\n") if $debug_common;
 }
 
 sub getcommon 
 {
+	cprint($letter, $number, "get common\n") if $debug_common;
 	print $server "get common\n";
 	$waiting = "to get size fo common data";
 	my $size = <$server>;
@@ -251,24 +321,28 @@ sub getcommon
 	my $r = thaw($buf);
 	return @$r if wantarray;
 	return $r->[0];
+	cprint($letter, $number, "done\n") if $debug_common;
 }
 
 sub setcommon 
 {
+	cprint($letter, $number, "set common\n") if $debug_common;
 	my $x = freeze([@_]);
 	print $server "set common\n";
 	print $server length($x)."\n";
 	print $server $x;
+	cprint($letter, $number, "done\n") if $debug_common;
 }
 
 sub notokay
 {
-	my ($not, $name, $comment) = @_;
+	my ($not, $name, $letter, $n, $comment) = @_;
 	$not = $not ? "not " : "";
 	$name = " - $name" unless $name =~ /^\s*-/;
 	$comment = "" unless defined $comment;
-	print "${not}ok $sequence $name # $comment\n";
+	cprint($letter, $n, "$ret${not}ok $sequence $name # $comment");
 	$sequence++;
+	$ret = "\n";
 }
 
 sub lastrites
@@ -277,6 +351,22 @@ sub lastrites
 		print STDERR "SERVER WAIT $name $number-$letter: $waiting\n";
 	}
 	confess;
+}
+
+sub cprint
+{
+	my $letter = shift;
+	my $n = shift;
+	if ($colorize && $letter) {
+		my $fg = $color_fg[$n] || 7;
+		my $bg = $color_bg{$letter} || 0;
+		$fg = 7 if $bg == $fg;
+		print "\x9b3${fg}m\x9b4${bg}m";
+		print @_;
+		print "\x9b39m\x9b49m";
+	} else {
+		print @_;
+	}
 }
 
 sub filter {
@@ -343,15 +433,17 @@ package Test::MultiFork::Timer;
 
 use Carp;
 use strict;
-use diagnostics;
+use warnings;
 
 sub new
 {
 	my ($pkg) = @_;
 	my $self = bless { }, $pkg;
+
 	$self->{event} = Event->timer(
 		cb		=> [ $self, 'timeout' ],
-		interval	=> 3,
+		interval	=> $inactivity,
+		hard		=> 0,
 	);
 	return $self;
 }
@@ -383,6 +475,7 @@ sub reset
 	my ($self) = @_;
 #my (undef, $f, $l) = caller;
 #print "timer reset from $f:$l\n";
+	$self->{event}->stop();
 	$self->{event}->again();
 }
 
@@ -390,7 +483,7 @@ package Test::MultiFork::Capture;
 
 use Carp;
 use strict;
-use diagnostics;
+use warnings;
 
 sub new
 {
@@ -421,7 +514,7 @@ sub ie_input
 			$comment = '' unless defined $name;
 			if (defined($seq)) {
 				if ($seq != $self->{seq}) {
-					Test::MultiFork::notokay(1, 
+					Test::MultiFork::notokay(1, $self->{letter}, $self->{n},
 						"result ordering in $self->{name}", 
 						"expected '$self->{seq}' but got '$seq'");
 				}
@@ -430,16 +523,16 @@ sub ie_input
 				$self->{seq}++;
 			}
 			$comment .= " [ $self->{name} #$seq ]";
-			Test::MultiFork::notokay($not, $name, $comment);
+			Test::MultiFork::notokay($not, $name, $self->{letter}, $self->{n}, $comment);
 			next;
 		}
 		if (/^1\.\.(\d+)/) {
-			Test::MultiFork::notokay(1, "multiple plans", $self->{name})
+			Test::MultiFork::notokay(1, $self->{letter}, $self->{n}, "multiple plans", $self->{name})
 				if defined $self->{plan};
 			$self->{plan} = $1;
 			next;
 		}
-		print "$_ [$self->{name}]\n";
+		Test::MultiFork::cprint($self->{letter}, $self->{n}, "\n$_ [$self->{name}]");
 		exit 1 if /^Bail out!/;
 	}
 }
@@ -450,9 +543,9 @@ sub ie_eof
 	if ($self->{plan}) {
 		$self->{seq}--;
 		if ($self->{plan} == $self->{seq}) {
-			Test::MultiFork::notokay(0, "plan followed", $self->{name});
+			Test::MultiFork::notokay(0, $self->{letter}, $self->{n}, "plan followed", $self->{name});
 		} else {
-			Test::MultiFork::notokay(1, 
+			Test::MultiFork::notokay(1, $self->{letter}, $self->{n},  
 				"plan followed $self->{seq}",
 				"plan: $self->{plan} actual: $self->{seq}");
 		}
@@ -467,7 +560,7 @@ package Test::MultiFork::Control;
 
 use Carp;
 use strict;
-use diagnostics;
+use warnings;
 
 sub new
 {
@@ -493,11 +586,12 @@ sub new
 sub ie_input
 {
 	my ($self, $ie) = @_;
+#print "\ncontrol input...";
 	$timer->reset;
 	while (<$ie>) {
 #my $x = $_;
 #$x =~ s/\n/\\n/g;
-#print "CONTROL: $self->{code}:$x.\n";
+#print "\nCONTROL: $self->{code}:$x.";
 
 		### name
 
@@ -530,19 +624,19 @@ sub ie_input
 			confess unless $commonlock eq $self;
 			my $size = $ie->get();
 			if (defined $size) {
-				my $buf;
-				my $amt = read($ie, $common, $size);
-				if (defined $amt) {
-					confess unless $amt == $size;
-					delete $self->{status};
+				if ($ie->can_read($size)) {
+					read($ie, $common, $size) == $size
+						|| confess;
 				} else {
 					$ie->unget($size);
 					$ie->unget("set common");
 					$self->{status} = "waiting for common data";
+					last;
 				}
 			} else {
 				$ie->unget("set common");
 				$self->{status} = "waiting for size of common data";
+				last;
 			}
 		} elsif (/^get common/) {
 			print $ie length($common)."\n";
@@ -564,6 +658,7 @@ sub ie_input
 			confess "unknown control: $_";
 		}
 	}
+#print "\nstatus = $self->{status}";
 #print "return\n";
 }
 
@@ -586,7 +681,7 @@ sub wake_group
 #print "$member->{code} waiting at $member->{waiting}\n";
 			if (defined $tag) {
 				if ($tag ne $member->{waiting}) {
-					Test::MultiFork::notokay(1, 
+					Test::MultiFork::notokay(1, $members[0]->{letter}, $members[0]->{n},
 						sprintf("inconsistent group tags '%s' vs '%s'", 
 							$members[0]->{name}, $member->{name}),
 						sprintf("'%s' vs '%s'", 

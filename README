@@ -10,7 +10,7 @@ SYNOPSIS
             setcommon(@newvalues)
             unlockcommon()
 
-            use Test::MultiFork qw(groupwait setgroup dofork)
+            use Test::MultiFork qw(groupwait setgroup dofork stderr bail_on_bad_plan)
 
             groupwait([$tag])
             $oldgroup = setgroup([$newgroup])
@@ -78,9 +78,10 @@ SOURCE FILTER
             sub xyz {
             a: 
                     print "only a does something in this function\n";
+            abcd:
             }
 
-    Since the processes run in lockstep (synchronized at the labels), loops
+    Since the processes run in lockstep (synchronized at the labels), loop
     controls must cover all processes.
 
     In addition to fork() and the varient execution labels, you can override
@@ -90,6 +91,20 @@ SOURCE FILTER
     diagnostics. The special label "SIGNAL_xyz:" changes which signal to
     use. Substitute "xyz" with your choice of signal or "none" to disable
     this feature.
+
+IMPORTS
+    stderr
+    Import 'stderr' to send the STDERR output from each fork through the
+    parent for tagging. The default is to leave STDERR alone.
+
+    bail_on_bad_plan
+    Bail out if a test plan isn't followed. This is most useful as a way to
+    exit early if one of the fork()ed children exits early.
+
+    colorize
+    If "$ENV{TERM} =~ /xterm/", then escape codes will be printed to change
+    the background and foreground text colors so that each fork()ed child
+    has a different color scheme.
 
 FUNCTIONS
     lockcommon()
@@ -134,13 +149,10 @@ INTEGRATION WITH TEST::*
     Test::More) put Test::MultiFork first in the "use" list.
 
 SEE ALSO
-            Test::Harness
-            Test::Builder
-            Test::Simple
-            Test::More
+    Test::Harness Test::Builder Test::Simple Test::More Test
 
 BUGS
-    This is brand-new and bearly tested. Please provide feedback!
+    This is new and bearly tested. Please provide feedback!
 
 LICENSE
     Copyright (C) 2003 David Muir Sharnoff <muir@idiom.com>. This module may
