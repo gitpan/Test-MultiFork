@@ -1,5 +1,12 @@
 #!perl -I.
 
+#
+# This test assumes that everything will happen
+# fast enough.  If it doesn't, then the test will
+# fail.  There is no guarentee of sucess, just an
+# expectation.
+#
+
 use Test::MultiFork;
 use Time::HiRes qw(sleep);
 
@@ -16,7 +23,7 @@ setcommon($x);
 unlockcommon();
 
 #print STDERR "# $number sleeps$$\n";
-sleep(0.3 * ($number+1));
+sleep(0.5 * ($number+1));
 #print STDERR "# $number wakeup$$\n";
 
 lockcommon();

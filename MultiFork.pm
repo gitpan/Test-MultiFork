@@ -12,7 +12,9 @@ require Exporter;
 use Time::HiRes qw(sleep);
 use Carp;
 
-$VERSION = 0.3;
+#print STDERR "IOE V: $IO::Event::VERSION\n";
+
+$VERSION = 0.4;
 
 @ISA = qw(Exporter);
 @EXPORT = qw(procname lockcommon unlockcommon getcommon setcommon);
@@ -27,15 +29,17 @@ my $colorize;
 my %capture;
 my %control;
 my $sequence = 1;
-my $commonlock;
-my @commonwait;
+my $commonlock;	# current holder of lock
+my @commonwait;	# waiting for lock
 my $common = freeze([]);
 my %groups;
 my $timer;
 my $bialout;
 my $ret = '';
 my $bailonbadplan = 0;
-our $inactivity; $inactivity ||= 3;
+
+our $inactivity; 
+$inactivity ||= 5;
 
 # client side
 my $server;
@@ -282,7 +286,7 @@ sub setgroup
 
 sub lockcommon
 {
-	cprint($letter, $number, "locking common\n") if $debug_common;
+	print STDERR "\n[$letter-$number] locking common -request\n" if $debug_common;
 	unless ($lockdepth++) {
 		print $server "lock common\n";
 		$waiting = "lock on common data";
@@ -290,12 +294,12 @@ sub lockcommon
 		confess unless $youhavelock eq "youhavelock\n";
 		undef $waiting;
 	}
-	cprint($letter, $number, "done\n") if $debug_common;
+	print STDERR "\n[$letter-$number] locking common done\n" if $debug_common;
 }
 
 sub unlockcommon
 {
-	cprint($letter, $number, "unlocking common\n") if $debug_common;
+	print STDERR "\n[$letter-$number] unlocking common -request\n" if $debug_common;
 	unless (--$lockdepth) {
 		print $server "unlock common\n";
 		undef $common;
@@ -304,14 +308,14 @@ sub unlockcommon
 		warn "common already unlocked";
 		$lockdepth = 0;
 	}
-	cprint($letter, $number, "done\n") if $debug_common;
+	print STDERR "\n[$letter-$number] unlocking common done\n" if $debug_common;
 }
 
 sub getcommon 
 {
-	cprint($letter, $number, "get common\n") if $debug_common;
+	print STDERR "\n[$letter-$number] get common - request\n" if $debug_common;
 	print $server "get common\n";
-	$waiting = "to get size fo common data";
+	$waiting = "to get size of common data";
 	my $size = <$server>;
 	$waiting = "for common data";
 	my $buf;
@@ -319,19 +323,19 @@ sub getcommon
 	confess unless $amt == $size;
 	undef $waiting;
 	my $r = thaw($buf);
+	print STDERR "\n[$letter-$number] get common done\n" if $debug_common;
 	return @$r if wantarray;
 	return $r->[0];
-	cprint($letter, $number, "done\n") if $debug_common;
 }
 
 sub setcommon 
 {
-	cprint($letter, $number, "set common\n") if $debug_common;
+	print STDERR "\n[$letter-$number] set common -request\n" if $debug_common;
 	my $x = freeze([@_]);
 	print $server "set common\n";
 	print $server length($x)."\n";
 	print $server $x;
-	cprint($letter, $number, "done\n") if $debug_common;
+	print STDERR "\n[$letter-$number] set common done\n" if $debug_common;
 }
 
 sub notokay
@@ -348,7 +352,7 @@ sub notokay
 sub lastrites
 {
 	if ($waiting) {
-		print STDERR "SERVER WAIT $name $number-$letter: $waiting\n";
+		print STDERR "\nSERVER WAIT $name $number-$letter: $waiting";
 	}
 	confess;
 }
@@ -453,7 +457,8 @@ sub new
 
 sub timeout
 {
-	print STDERR "Bail out!  Timeout in Test::MultiFork\n";
+	print STDERR "\nBail out!  Timeout in Test::MultiFork\n";
+
 	for my $c (values %control) {
 		my $x = ($c->{name} eq $c->{code}) ? $c->{name} : "$c->{name} ($c->{code})";
 		my $y = $c->{status} 
@@ -463,7 +468,14 @@ sub timeout
 				: ($c->{lockstatus}
 					? $c->{lockstatus}
 					: "idle"));
-		print STDERR "$x: $y\n";
+		my @z;
+		my $e = $c->{ie}->event;
+		push(@z, "cancelled") if $e->is_cancelled;
+		push(@z, "active") if $e->is_active;
+		push(@z, "running") if $e->is_running;
+		push(@z, "suspended") if $e->is_suspended;
+		push(@z, "pending") if $e->pending;
+		print STDERR "$x: $y (event status: @z)\n";
 		if ($signal) {
 			kill($signal, $c->{pid});
 		}
@@ -589,6 +601,7 @@ sub new
 sub ie_input
 {
 	my ($self, $ie) = @_;
+#print "\nBEGIN ie_input for $self->{code}";
 #print "\ncontrol input...";
 	$timer->reset;
 	while (<$ie>) {
@@ -612,6 +625,7 @@ sub ie_input
 			} else {
 				$commonlock = $self;
 				$self->{lockstatus} = "holding common data lock";
+#print "\nSEND TO $self->{code}: youhavelock\n";
 				print $ie "youhavelock\n";
 			}
 		} elsif (/^unlock common/) {
@@ -619,6 +633,7 @@ sub ie_input
 			delete $self->{lockstatus};
 			$commonlock = shift @commonwait;
 			if ($commonlock) {
+#print "\nWAKEUP SEND TO $commonlock->{code}: youhavelock\n";
 				$commonlock->{fh}->print("youhavelock\n");
 				$commonlock->{lockstatus} = "holding common data lock";
 				delete $commonlock->{status};
@@ -642,6 +657,7 @@ sub ie_input
 				last;
 			}
 		} elsif (/^get common/) {
+#print "\nSEND TO $self->{code}: length & common";
 			print $ie length($common)."\n";
 			print $ie $common;
 
@@ -662,6 +678,7 @@ sub ie_input
 		}
 	}
 #print "\nstatus = $self->{status}";
+#print "\nEND ie_input for $self->{code}\n";
 #print "return\n";
 }
 
