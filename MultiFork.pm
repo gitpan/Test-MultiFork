@@ -1,0 +1,621 @@
+
+package Test::MultiFork;
+
+use Filter::Util::Call ;
+use Event;
+use IO::Event;
+use IO::Handle;
+use Storable qw(freeze thaw);
+require POSIX;
+use Socket;
+require Exporter;
+use Time::HiRes qw(sleep);
+use Carp;
+
+$VERSION = 0.1;
+
+@ISA = qw(Exporter);
+@EXPORT = qw(procname lockcommon unlockcommon getcommon setcommon);
+@EXPORT_OK = (@EXPORT, qw(groupwait setgroup dofork));
+
+use strict;
+use diagnostics;
+
+my $pkg = __PACKAGE__;
+
+sub import {
+	my $pkg = shift;
+	filter_add(bless [], $pkg);
+	$pkg->export_to_level(1, @_);
+}
+
+# server side
+my %capture;
+my %control;
+my $sequence = 1;
+my $commonlock;
+my @commonwait;
+my $common = freeze([]);
+my %groups;
+my $timer;
+my $bialout;
+
+# client side
+my $server;
+my $newstdout;
+my $letter;
+my $number;
+my $name;
+my $lockdepth = 0;
+my $group = 'default';
+my $waiting;
+
+# shared
+my $signal;
+
+sub dofork
+{
+	my ($spec) = @_;
+
+	while($spec) {
+		$spec =~ s/^([a-z])(\d*)// || confess "illegal fork spec";
+		my $l = $1;
+		my $count = $2 || 1;
+		for my $n (1..$count) {
+			my $pid;
+			my $psideCapture = new IO::Handle;
+			my $psideControl = new IO::Handle;
+			$server = new IO::Handle;
+			$newstdout = new IO::Handle;
+			socketpair($psideCapture, $newstdout, AF_UNIX, SOCK_STREAM, PF_UNSPEC)
+				|| confess "socketpair: $!";
+			socketpair($psideControl, $server, AF_UNIX, SOCK_STREAM, PF_UNSPEC)
+				|| confess "socketpair: $!";
+			if ($pid = fork()) {
+				# parent
+#sleep(0.1);
+				$server->close();
+				$newstdout->close();
+
+				if (0 && 'CRAZY_STUFF') { 
+					use IO::Pipe;
+					my $pipe = new IO::Pipe;
+
+					if (fork()) {
+						$newstdout->close();
+						$pipe->reader();
+						$psideCapture = $pipe;
+					} else {
+						$pipe->writer();
+						my $fn = $pipe->fileno();
+						open(STDOUT, ">&=$fn") || confess "redirect stdout2: $!";
+						$fn = $psideCapture->fileno();
+						open(STDIN, "<&=", $fn) || confess "redirect stdin: $!";
+						exec("tee bar.$$") || confess "exec: $!";
+					}
+				}
+
+				Test::MultiFork::Control->new($psideControl, $l, $n, $pid);
+				Test::MultiFork::Capture->new($psideCapture, $l, $n);
+
+			} elsif (defined $pid) {
+				# child
+				$letter = $l;
+				$number = $n;
+				$name = "$l-$n";
+
+				$psideCapture->close();
+				$psideControl->close();
+				for my $c (keys %capture) {
+					$capture{$c}{ie}->close();
+					delete $capture{$c};
+				}
+				for my $c (keys %control) {
+					$control{$c}{ie}->close();
+					delete $control{$c};
+				}
+
+				if (0 && 'CRAZY_STUFF') { 
+					use IO::Pipe;
+					my $pipe = new IO::Pipe;
+
+					if (fork()) {
+						$newstdout->close();
+						$pipe->writer();
+						$newstdout = $pipe;
+					} else {
+						my $fn = $newstdout->fileno();
+						open(STDOUT, ">&=$fn") || confess "redirect stdout2: $!";
+						$pipe->reader();
+						$fn = $pipe->fileno();
+						#close(STDIN);
+						open(STDIN, "<&=", $fn) || confess "redirect stdin: $!";
+						exec("tee foo.$$") || confess "exec: $!";
+					}
+				}
+
+				$newstdout->autoflush(1);
+				$server->autoflush(1);
+				if (defined &Test::Builder::new) {
+					my $tb = new Test::Builder;
+					$tb->output($newstdout);
+					$tb->todo_output($newstdout);
+					$tb->failure_output($newstdout);
+				}
+				my $fn = $newstdout->fileno();
+				open(STDOUT, ">&=$fn") || confess "redirect stdout: $!";
+				autoflush STDOUT 1;
+				
+				$SIG{$signal} = \&lastrites
+					if $signal;
+
+				$waiting = "for initial begin";
+				my $x = <$server>;
+				confess unless $x eq "begin\n";
+				undef $waiting;
+
+				return;
+			} else {
+				confess "Can't fork: $!";
+			}
+		}
+	}
+#print "about to create timer\n";
+	$timer = Test::MultiFork::Timer->new();
+
+#print "sending begin\n";
+	for my $control (values %control) {
+		$control->{fh}->print("begin\n");
+	}
+
+#print "event loop\n";
+	if (Event::loop() == 7.3) {
+		# great
+		notokay(0, "clean shutdown");
+	} else {
+		notokay(1, "event loop timeout");
+	}
+	$sequence--;
+	print "1..$sequence\n";
+	exit(0);
+}
+
+sub groupwait
+{
+	my ($tag) = @_;
+	my (undef, $filename, $line) = caller;
+	$tag = "$filename:$line" unless $tag;
+	print $server "waitforgroup $tag\n";
+	$waiting = "for go-ahead after a group wait ($group)";
+	my $go = <$server>;
+	confess unless $go eq "go\n";
+	undef $waiting;
+}
+
+sub procname
+{
+	my $oname = $name;
+	if (@_) {
+		$name = $_[0];
+		confess if $name =~ /\n/;
+		print $server "setname $name\n";
+	}
+	return ($name, $letter, $number) if wantarray;
+	return $name;
+}
+
+sub setgroup
+{
+	my $og = $group;
+	if (@_) {
+		$group = $_[0];
+		confess if $group =~ /\n/;
+		print $server "setgroup $group\n";
+	}
+	return $og;
+}
+
+sub lockcommon
+{
+	unless ($lockdepth++) {
+		print $server "lock common\n";
+		$waiting = "lock on common data";
+		my $youhavelock = <$server>;
+		confess unless $youhavelock eq "youhavelock\n";
+		undef $waiting;
+	}
+}
+
+sub unlockcommon
+{
+	unless (--$lockdepth) {
+		print $server "unlock common\n";
+		undef $common;
+	}
+	if ($lockdepth < 0) {
+		warn "common already unlocked";
+		$lockdepth = 0;
+	}
+}
+
+sub getcommon 
+{
+	print $server "get common\n";
+	$waiting = "to get size fo common data";
+	my $size = <$server>;
+	$waiting = "for common data";
+	my $buf;
+	my $amt = read($server, $buf, $size);
+	confess unless $amt == $size;
+	undef $waiting;
+	my $r = thaw($buf);
+	return @$r if wantarray;
+	return $r->[0];
+}
+
+sub setcommon 
+{
+	my $x = freeze([@_]);
+	print $server "set common\n";
+	print $server length($x)."\n";
+	print $server $x;
+}
+
+sub notokay
+{
+	my ($not, $name, $comment) = @_;
+	$not = $not ? "not " : "";
+	$name = " - $name" unless $name =~ /^\s*-/;
+	$comment = "" unless defined $comment;
+	print "${not}ok $sequence $name # $comment\n";
+	$sequence++;
+}
+
+sub lastrites
+{
+	if ($waiting) {
+		print STDERR "SERVER WAIT $name $number-$letter: $waiting\n";
+	}
+	confess;
+}
+
+sub filter {
+	my ($self) = @_;
+
+	my @new;
+	while (filter_read() > 0) {
+		push(@new, $_);
+		$_ = '';
+	}
+	if (@new) {
+		my %procs;
+		my $insub;
+		my $active = 1;
+		my $fork;
+
+		for (@new) {
+			if (s/^(FORK_([a-z0-9]+):\s*)$/## $1/) {
+				confess "only one FORK_ allowed" if $fork;
+				$fork = $2;
+			} elsif (s/^(SIGNAL_(\w*):\s*)$/## $1/) {
+				confess "only one SIGNAL_ allowed" if defined $signal;
+				$signal = $2;
+			}
+		}
+		$signal = 'USR1' unless defined $signal;
+		$signal = '' if $signal eq 'none';
+			
+		if ($fork) {
+			dofork($fork);
+
+			while (@new) {
+				$_ = shift @new;
+
+				if (/^sub\s+\w+/) {
+					$insub = 1; # {
+				} elsif (/^}/) {
+					$insub = 0;
+				}
+
+				if (/^([a-z]+):/) {
+					my $sets = $1;
+					$active = (($sets =~ /$letter/o) ? 1 : 0);
+					push(@$self, "${pkg}::groupwait();\n")
+						unless $insub;
+				} elsif ($active) {
+					push(@$self, $_);
+				} else {
+					push(@$self, "## $_");
+				}
+			}
+		} else {
+			# no builtin fork
+			@$self = @new;
+		}
+#print "SOURCE: @$self\n DONE\n";
+	}
+	return 0 unless @$self;
+	$_ = shift @$self;
+	return 1;
+}
+
+package Test::MultiFork::Timer;
+
+use Carp;
+use strict;
+use diagnostics;
+
+sub new
+{
+	my ($pkg) = @_;
+	my $self = bless { }, $pkg;
+	$self->{event} = Event->timer(
+		cb		=> [ $self, 'timeout' ],
+		interval	=> 3,
+	);
+	return $self;
+}
+
+sub timeout
+{
+	print STDERR "Bail out!  Timeout in Test::MultiFork\n";
+	for my $c (values %control) {
+		my $x = ($c->{name} eq $c->{code}) ? $c->{name} : "$c->{name} ($c->{code})";
+		my $y = $c->{status} 
+			? $c->{status} 
+			: ($c->{waiting} 
+				? "waiting for $c->{group} for $c->{waiting}"
+				: ($c->{lockstatus}
+					? $c->{lockstatus}
+					: "idle"));
+		print STDERR "$x: $y\n";
+		if ($signal) {
+			kill($signal, $c->{pid});
+		}
+		sleep(0.2);
+	}
+	Event::unloop_all(7.2) unless %control || %capture;
+	exit(1);
+}
+
+sub reset
+{
+	my ($self) = @_;
+#my (undef, $f, $l) = caller;
+#print "timer reset from $f:$l\n";
+	$self->{event}->again();
+}
+
+package Test::MultiFork::Capture;
+
+use Carp;
+use strict;
+use diagnostics;
+
+sub new
+{
+	my ($pkg, $fh, $letter, $n) = @_;
+	my $self = bless {
+		letter	=> $letter,
+		n	=> $n,
+		seq	=> 1,
+		plan	=> undef,
+		code	=> "$letter-$n",
+		name	=> "$letter-$n",
+	}, $pkg;
+	$self->{ie} = IO::Event->new($fh, $self);
+	$capture{$self->{code}} = $self;
+	return $self;
+}
+
+sub ie_input
+{
+	my ($self, $ie) = @_;
+	$timer->reset;
+	while (<$ie>) {
+#print "RECV$self->{code}: $_";
+		chomp;
+		if (/^(?:(not)\s+)?ok\S*(?:\s+(\d+))?([^#]*)(?:#(.*))?$/) {
+			my ($not, $seq, $name, $comment) = ($1, $2, $3, $4);
+			$name = '' unless defined $name;
+			$comment = '' unless defined $name;
+			if (defined($seq)) {
+				if ($seq != $self->{seq}) {
+					Test::MultiFork::notokay(1, 
+						"result ordering in $self->{name}", 
+						"expected '$self->{seq}' but got '$seq'");
+				}
+				$self->{seq} = $seq+1;
+			} else {
+				$self->{seq}++;
+			}
+			$comment .= " [ $self->{name} #$seq ]";
+			Test::MultiFork::notokay($not, $name, $comment);
+			next;
+		}
+		if (/^1\.\.(\d+)/) {
+			Test::MultiFork::notokay(1, "multiple plans", $self->{name})
+				if defined $self->{plan};
+			$self->{plan} = $1;
+			next;
+		}
+		print "$_ [$self->{name}]\n";
+		exit 1 if /^Bail out!/;
+	}
+}
+
+sub ie_eof
+{
+	my ($self, $ie) = @_;
+	if ($self->{plan}) {
+		$self->{seq}--;
+		if ($self->{plan} == $self->{seq}) {
+			Test::MultiFork::notokay(0, "plan followed", $self->{name});
+		} else {
+			Test::MultiFork::notokay(1, 
+				"plan followed $self->{seq}",
+				"plan: $self->{plan} actual: $self->{seq}");
+		}
+	} 
+	$ie->close();
+	delete $capture{$self->{code}};
+	Event::unloop_all(7.3) unless %control || %capture;
+}
+
+
+package Test::MultiFork::Control;
+
+use Carp;
+use strict;
+use diagnostics;
+
+sub new
+{
+	my ($pkg, $fh, $letter, $n, $pid) = @_;
+	my $self = bless {
+		fh	=> $fh,
+		letter	=> $letter,
+		n	=> $n,
+		seq	=> 1,
+		plan	=> undef,
+		code	=> "$letter-$n",
+		name	=> "$letter-$n",
+		group	=> 'default',
+		pid	=> $pid,
+		# waiting
+	}, $pkg;
+	$self->{ie} = IO::Event->new($fh, $self);
+	$control{$self->{code}} = $self;
+	$groups{default}{"$letter-$n"} = $self;
+	return $self;
+}
+
+sub ie_input
+{
+	my ($self, $ie) = @_;
+	$timer->reset;
+	while (<$ie>) {
+#my $x = $_;
+#$x =~ s/\n/\\n/g;
+#print "CONTROL: $self->{code}:$x.\n";
+
+		### name
+
+		if (/^setname (.*)/) {
+			$self->{name} = $1;
+			$capture{$self->{code}}{name} = $1
+				if exists $capture{$self->{code}};
+
+		### common (shared data)
+
+		} elsif (/^lock common/) {
+			if ($commonlock) {
+				push(@commonwait, $self);
+				$self->{status} = "waiting for common data lock";
+			} else {
+				$commonlock = $self;
+				$self->{lockstatus} = "holding common data lock";
+				print $ie "youhavelock\n";
+			}
+		} elsif (/^unlock common/) {
+			confess unless $commonlock eq $self;
+			delete $self->{lockstatus};
+			$commonlock = shift @commonwait;
+			if ($commonlock) {
+				$commonlock->{fh}->print("youhavelock\n");
+				$commonlock->{lockstatus} = "holding common data lock";
+				delete $commonlock->{status};
+			}
+		} elsif (/^set common/) {
+			confess unless $commonlock eq $self;
+			my $size = $ie->get();
+			if (defined $size) {
+				my $buf;
+				my $amt = read($ie, $common, $size);
+				if (defined $amt) {
+					confess unless $amt == $size;
+					delete $self->{status};
+				} else {
+					$ie->unget($size);
+					$ie->unget("set common");
+					$self->{status} = "waiting for common data";
+				}
+			} else {
+				$ie->unget("set common");
+				$self->{status} = "waiting for size of common data";
+			}
+		} elsif (/^get common/) {
+			print $ie length($common)."\n";
+			print $ie $common;
+
+		### group afiliation
+
+		} elsif (/^setgroup (.*)/) {
+			$self->{newgroup} = $1;
+		
+		### synchronization
+
+		} elsif (/^waitforgroup (.*)/) {
+			$self->{waiting} = $1;
+			wake_group($self->{group});
+		### oops
+
+		} else {
+			confess "unknown control: $_";
+		}
+	}
+#print "return\n";
+}
+
+sub ie_eof
+{
+	my ($self, $ie) = @_;
+	$ie->close();
+	delete $control{$self->{code}};
+	Event::unloop_all(7.3) unless %control || %capture;
+}
+
+sub wake_group
+{
+	my ($group) = @_;
+	my $allthere = 1;
+	my @members = values %{$groups{$group}};
+	my $tag;
+	for my $member (@members) {
+		if ($member->{waiting}) {
+#print "$member->{code} waiting at $member->{waiting}\n";
+			if (defined $tag) {
+				if ($tag ne $member->{waiting}) {
+					Test::MultiFork::notokay(1, 
+						sprintf("inconsistent group tags '%s' vs '%s'", 
+							$members[0]->{name}, $member->{name}),
+						sprintf("'%s' vs '%s'", 
+							$members[0]->{waiting}, $member->{waiting}));
+				}
+			} else {
+				$tag = $member->{waiting}
+			}
+		} else {
+#print "$member->{code} not waiting\n";
+			$allthere = 0;
+			last;
+		}
+	}
+	if ($allthere) {
+#print "ALL THERE\n";
+		for my $member (@members) {
+			next unless $member->{newgroup};
+			delete $groups{$member->{group}}{$member->{code}};
+			$member->{group} = $1;
+			$groups{$member->{newgroup}}{$member->{code}} = $member;
+			delete $member->{newgroup};
+		}
+		for my $member (@members) {
+			delete $member->{waiting};
+#print "WAKEUP $member->{code}\n";
+			$member->{fh}->print("go\n");
+		}
+	}
+}
+
+1;
