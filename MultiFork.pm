@@ -12,7 +12,7 @@ require Exporter;
 use Time::HiRes qw(sleep);
 use Carp;
 
-$VERSION = 0.2;
+$VERSION = 0.3;
 
 @ISA = qw(Exporter);
 @EXPORT = qw(procname lockcommon unlockcommon getcommon setcommon);
@@ -379,7 +379,7 @@ sub filter {
 	}
 	if (@new) {
 		my %procs;
-		my $insub;
+		my $insub = '';
 		my $active = 1;
 		my $fork;
 
@@ -395,13 +395,13 @@ sub filter {
 		$signal = 'USR1' unless defined $signal;
 		$signal = '' if $signal eq 'none';
 			
-		if ($fork) {
+		if (defined $fork) {
 			dofork($fork);
 
 			while (@new) {
 				$_ = shift @new;
 
-				if (/^sub\s+\w+/) {
+				if (/^sub\s+\w+(?!.*?;)/) {
 					$insub = 1; # {
 				} elsif (/^}/) {
 					$insub = 0;
@@ -410,12 +410,15 @@ sub filter {
 				if (/^([a-z]+):/) {
 					my $sets = $1;
 					$active = (($sets =~ /$letter/o) ? 1 : 0);
-					push(@$self, "${pkg}::groupwait();\n")
-						unless $insub;
+					unless ($insub) {
+						push(@$self, "${pkg}::groupwait();\n")
+					} else {
+						push(@$self, "#$insub# $_");
+					}
 				} elsif ($active) {
 					push(@$self, $_);
 				} else {
-					push(@$self, "## $_");
+					push(@$self, "#$insub# $_");
 				}
 			}
 		} else {
@@ -506,8 +509,8 @@ sub ie_input
 	my ($self, $ie) = @_;
 	$timer->reset;
 	while (<$ie>) {
-#print "RECV$self->{code}: $_";
 		chomp;
+# print "\nRECV$self->{n}: '$_'";
 		if (/^(?:(not)\s+)?ok\S*(?:\s+(\d+))?([^#]*)(?:#(.*))?$/) {
 			my ($not, $seq, $name, $comment) = ($1, $2, $3, $4);
 			$name = '' unless defined $name;

@@ -52,10 +52,10 @@ SOURCE FILTER
     something different for you loop control labels. This module can be used
     without putting in any special labels.
 
-    Outside of a function, a varient execution label does will synchronize
-    all the program forks to that line of code. As each fork reaches that
-    line, it will stop and wait until all forks get there. At that point,
-    all of the forks will start up and run again.
+    Outside of a function, a varient execution label will synchronize all
+    the program forks to that line of code. As each fork reaches that line,
+    it will stop and wait until all forks get there. At that point, all of
+    the forks will start up and run again.
 
     Inside or outside of a function, once a varient execution labels is
     seen, source code is turned on or off (commented out) depending on if

@@ -57,7 +57,7 @@ Varient execution labels must be all lowercase.  This is to allow you
 to use something different for you loop control labels.   This module 
 can be used without putting in any special labels.
 
-Outside of a function, a varient execution label does will synchronize
+Outside of a function, a varient execution label will synchronize
 all the program forks to that line of code.  As each fork reaches that
 line, it will stop and wait until all forks get there.  At that point, all
 of the forks will start up and run again.

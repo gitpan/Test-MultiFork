@@ -10,4 +10,5 @@ t/simple.t
 t/names.t
 t/2simple.t
 t/multifork.t
+t/ordering.t
 META.yml

@@ -7,7 +7,7 @@ FORK_a5:
 
 my (undef, undef, $number) = procname;
 
-print "1..$number";
+print "1..$number\n";
 
 lockcommon();
 my $x = getcommon();
