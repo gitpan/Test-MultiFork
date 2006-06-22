@@ -139,6 +139,10 @@ FUNCTIONS
     special-purpose test coordinator. The specification is as detailed in
     the DESCRIPTION above.
 
+    procname([$new_name])
+    Change the fork's name. The return value is a list: the current name,
+    process' letter, the process' number.
+
 INTEGRATION WITH TEST::*
     Test::Simple and Test::More encourage you to specify a test plan at
     compile time. Make sure that dofork() is called before the test plan is
@@ -155,6 +159,6 @@ BUGS
     This is new and bearly tested. Please provide feedback!
 
 LICENSE
-    Copyright (C) 2003 David Muir Sharnoff <muir@idiom.com>. This module may
-    be used/copied/etc on the same terms as Perl itself.
+    Copyright (C) 2003-2006 David Muir Sharnoff <muir@idiom.com>. This
+    module may be used/copied/etc on the same terms as Perl itself.
 

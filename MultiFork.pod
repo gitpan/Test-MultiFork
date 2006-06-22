@@ -158,6 +158,11 @@ Fork off children processes.  The parent process becomes the
 special-purpose test coordinator.  The specification is as detailed
 in the DESCRIPTION above.
 
+=item procname([$new_name])
+
+Change the fork's name.  The return value is a list: the current
+name, process' letter, the process' number.
+
 =head1 INTEGRATION WITH TEST::*
 
 Test::Simple and Test::More encourage you to specify a test plan
@@ -182,7 +187,7 @@ This is new and bearly tested.   Please provide feedback!
 
 =head1 LICENSE
 
-Copyright (C) 2003 David Muir Sharnoff <muir@idiom.com>.
+Copyright (C) 2003-2006 David Muir Sharnoff <muir@idiom.com>.
 This module may be used/copied/etc on the same terms as Perl
 itself.
 

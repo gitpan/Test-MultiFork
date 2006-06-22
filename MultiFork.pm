@@ -14,7 +14,7 @@ use Carp;
 
 #print STDERR "IOE V: $IO::Event::VERSION\n";
 
-$VERSION = 0.4;
+$VERSION = 0.5;
 
 @ISA = qw(Exporter);
 @EXPORT = qw(procname lockcommon unlockcommon getcommon setcommon);
@@ -53,7 +53,8 @@ my $waiting;
 
 # debugging
 
-my $debug_common = 0;
+our $debug_common = 0;
+our $debug_groupwait = 0;
 
 # constants
 
@@ -240,9 +241,9 @@ sub dofork
 #print "event loop\n";
 	if (Event::loop() == 7.3) {
 		# great
-		notokay(0, "clean shutdown");
+		notokay(0, '', '', '', "clean shutdown");
 	} else {
-		notokay(1, "event loop timeout");
+		notokay(1, '', '', '', "event loop timeout");
 	}
 	$sequence--;
 	print "\n1..$sequence\n";
@@ -257,7 +258,7 @@ sub groupwait
 	print $server "waitforgroup $tag\n";
 	$waiting = "for go-ahead after a group wait ($group)";
 	my $go = <$server>;
-	confess unless $go eq "go\n";
+	confess "go='$go' (not 'go\\n')" unless $go eq "go\n";
 	undef $waiting;
 }
 
@@ -529,7 +530,7 @@ sub ie_input
 			$comment = '' unless defined $name;
 			if (defined($seq)) {
 				if ($seq != $self->{seq}) {
-					Test::MultiFork::notokay(1, $self->{letter}, $self->{n},
+					Test::MultiFork::notokay(1, $self->{name}, $self->{letter}, $self->{n},
 						"result ordering in $self->{name}", 
 						"expected '$self->{seq}' but got '$seq'");
 				}
@@ -542,7 +543,7 @@ sub ie_input
 			next;
 		}
 		if (/^1\.\.(\d+)/) {
-			Test::MultiFork::notokay(1, $self->{letter}, $self->{n}, "multiple plans", $self->{name})
+			Test::MultiFork::notokay(1, $self->{name}, $self->{letter}, $self->{n}, "multiple plans")
 				if defined $self->{plan};
 			$self->{plan} = $1;
 			next;
@@ -558,9 +559,9 @@ sub ie_eof
 	if ($self->{plan}) {
 		$self->{seq}--;
 		if ($self->{plan} == $self->{seq}) {
-			Test::MultiFork::notokay(0, $self->{letter}, $self->{n}, "plan followed", $self->{name});
+			Test::MultiFork::notokay(0, $self->{name}, $self->{letter}, $self->{n}, "plan followed");
 		} else {
-			Test::MultiFork::notokay(1, $self->{letter}, $self->{n},  
+			Test::MultiFork::notokay(1, $self->{name}, $self->{letter}, $self->{n},  
 				"plan followed $self->{seq}",
 				"plan: $self->{plan} actual: $self->{seq}");
 		}
@@ -698,26 +699,30 @@ sub wake_group
 	my $tag;
 	for my $member (@members) {
 		if ($member->{waiting}) {
-#print "$member->{code} waiting at $member->{waiting}\n";
+			print "$member->{code} waiting at $member->{waiting}\n" if $debug_groupwait;
 			if (defined $tag) {
 				if ($tag ne $member->{waiting}) {
-					Test::MultiFork::notokay(1, $members[0]->{letter}, $members[0]->{n},
-						sprintf("inconsistent group tags '%s' vs '%s'", 
-							$members[0]->{name}, $member->{name}),
-						sprintf("'%s' vs '%s'", 
-							$members[0]->{waiting}, $member->{waiting}));
+					Test::MultiFork::notokay(1, 
+						$members[0]->{name}, 
+						$members[0]->{letter}, 
+						$members[0]->{n},
+						sprintf("inconsistent group wait locations: %s:'%s' vs %s:'%s'", 
+							$members[0]->{name},
+							$members[0]->{waiting},
+							$member->{name},
+							$member->{waiting}));
 				}
 			} else {
 				$tag = $member->{waiting}
 			}
 		} else {
-#print "$member->{code} not waiting\n";
+			print "$member->{code} not waiting\n" if $debug_groupwait;
 			$allthere = 0;
 			last;
 		}
 	}
 	if ($allthere) {
-#print "ALL THERE\n";
+		print "ALL THERE\n" if $debug_groupwait;
 		for my $member (@members) {
 			next unless $member->{newgroup};
 			delete $groups{$member->{group}}{$member->{code}};
@@ -727,7 +732,7 @@ sub wake_group
 		}
 		for my $member (@members) {
 			delete $member->{waiting};
-#print "WAKEUP $member->{code}\n";
+			print "WAKEUP $member->{code}\n" if $debug_groupwait;
 			$member->{fh}->print("go\n");
 		}
 	}
