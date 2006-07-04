@@ -14,7 +14,7 @@ use Carp;
 
 #print STDERR "IOE V: $IO::Event::VERSION\n";
 
-$VERSION = 0.5;
+$VERSION = 0.6;
 
 @ISA = qw(Exporter);
 @EXPORT = qw(procname lockcommon unlockcommon getcommon setcommon);
@@ -94,7 +94,8 @@ my @color_fg = (
 # shared
 my $signal;
 
-sub import {
+sub import 
+{
 	my $pkg = shift;
 	my @ia;
 	for my $ia (@_) {
@@ -111,7 +112,6 @@ sub import {
 	filter_add(bless [], $pkg);
 	$pkg->export_to_level(1, @ia);
 }
-
 
 sub dofork
 {
@@ -345,9 +345,8 @@ sub notokay
 	$not = $not ? "not " : "";
 	$name = " - $name" unless $name =~ /^\s*-/;
 	$comment = "" unless defined $comment;
-	cprint($letter, $n, "$ret${not}ok $sequence $name # $comment");
+	cprint($letter, $n, "${not}ok $sequence $name # $comment\n");
 	$sequence++;
-	$ret = "\n";
 }
 
 sub lastrites
@@ -521,9 +520,10 @@ sub ie_input
 {
 	my ($self, $ie) = @_;
 	$timer->reset;
+	my $bailout;
 	while (<$ie>) {
-		chomp;
 # print "\nRECV$self->{n}: '$_'";
+		chomp;
 		if (/^(?:(not)\s+)?ok\S*(?:\s+(\d+))?([^#]*)(?:#(.*))?$/) {
 			my ($not, $seq, $name, $comment) = ($1, $2, $3, $4);
 			$name = '' unless defined $name;
@@ -548,9 +548,9 @@ sub ie_input
 			$self->{plan} = $1;
 			next;
 		}
-		Test::MultiFork::cprint($self->{letter}, $self->{n}, "\n$_ [$self->{name}]");
-		exit 1 if /^Bail out!/;
+		Test::MultiFork::cprint($self->{letter}, $self->{n}, "$_ [$self->{name}]\n");
 	}
+	exit 1 if $bailout;
 }
 
 sub ie_eof
